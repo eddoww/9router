@@ -59,9 +59,14 @@ jobs:
           fi
       - name: Install regression dependencies
         if: steps.source.outputs.skip != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install test and application packages
+        if: steps.source.outputs.skip != 'true'
         run: |
-          nice -n 19 npm install --ignore-scripts --no-audit --no-fund
           nice -n 19 npm install --prefix tests --ignore-scripts --no-audit --no-fund
+          nice -n 19 npm install --ignore-scripts --no-audit --no-fund
       - name: Verify local patches
         if: steps.source.outputs.skip != 'true'
         run: bash homelab/test.sh
