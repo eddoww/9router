@@ -19,6 +19,9 @@ The homelab repository checks that release every five minutes, validates the
 manifest and commits the new digest to `k8s/ai-tools/9router.yaml`. ArgoCD applies
 the Git change. No Kubernetes credentials or cross-repository write token are
 given to this fork's workflow.
+Source promotion uses a write deploy key scoped only to this fork. This permits
+upstream workflow-file changes without storing a personal GitHub token in CI.
+The image and release are published with the workflow's repository token.
 
 ## Local patches
 
@@ -26,6 +29,9 @@ given to this fork's workflow.
   explicitly disables new tool calls. Responses Lite cannot replay that history.
 - Upstream generic SSE errors become terminal `response.failed` events, preserving
   their code and message for Codex recovery.
+- Claude/Codex 429 recovery consults fresh, bounded, account-specific subscription
+  quotas and preserves exact reset deadlines. Unknown readings retain ordinary
+  backoff. Model-scoped windows and Codex review/Spark pools remain separate.
 - Next, native dependency builds and regression runners use at most four workers
   and run at low priority.
 
