@@ -20,7 +20,7 @@ describe("Codex GPT-6 Sol/Luna transport", () => {
       reasoning: true,
       search: true,
       thinkingFormat: "openai",
-      contextWindow: 272000,
+      contextWindow: model === "gpt-6.1-sol" ? 1050000 : 272000,
       maxOutput: 128000,
     });
     expect(getThinkingLevels("codex", model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
@@ -114,6 +114,43 @@ describe("Codex GPT-6 Sol/Luna transport", () => {
     expect(body.tools).toEqual([tool, { type: "web_search" }]);
     expect(body.input.some(item => item.type === "additional_tools")).toBe(false);
     expect(body.tool_choice).toBe("none");
+  });
+
+  it.each([undefined, null, []])("replays hosted search during tool-free compaction with tools=%j", async (tools) => {
+    const fetchMock = vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockResolvedValue({
+      ok: true, status: 200, headers: new Map(),
+    });
+    const search = { type: "web_search_call", id: "ws_fixture", status: "completed", action: { type: "search", queries: ["fixture"] } };
+    await new CodexExecutor().execute({
+      model: "gpt-6.1-sol",
+      body: {
+        model: "gpt-6.1-sol", tools,
+        input: [search, { type: "message", role: "user", content: [{ type: "input_text", text: "Summarize without tools" }] }],
+      },
+      stream: true, credentials,
+    });
+    const [, options] = fetchMock.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(options.headers["x-openai-internal-codex-responses-lite"]).toBeUndefined();
+    expect(body.tools).toEqual([{ type: "web_search", external_web_access: false }]);
+    expect(body.tool_choice).toBe("none");
+    expect(body.input).toContainEqual(search);
+    expect(body.input.some(item => item.type === "additional_tools")).toBe(false);
+  });
+
+  it("keeps ordinary Lite tools and tool choice when search history is present", () => {
+    const tool = { type: "function", name: "run", parameters: { type: "object", properties: {} } };
+    const body = new CodexExecutor().transformRequest("gpt-6.1-sol", {
+      model: "gpt-6.1-sol",
+      input: [
+        { type: "additional_tools", role: "developer", tools: [tool] },
+        { type: "web_search_call", id: "ws_fixture", status: "completed", action: { type: "search", queries: ["fixture"] } },
+      ],
+      tools: null, tool_choice: "auto",
+    }, true, credentials);
+    expect(body.tools).toBeNull();
+    expect(body.tool_choice).toBe("auto");
+    expect(body.input[0].tools).toEqual([tool]);
   });
 
   it("preserves native Lite developer instructions when switching for hosted search", async () => {

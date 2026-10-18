@@ -426,6 +426,15 @@ export class CodexExecutor extends BaseExecutor {
     if (autoWebSearch && !body.tools?.some?.(tool => tool?.type === "web_search")) {
       body.tools = [...(Array.isArray(body.tools) ? body.tools : []), { type: "web_search" }];
     }
+    // Tool-free compaction can replay protected search history. Lite cannot
+    // read those records; retain the hosted schema without enabling new calls.
+    if (Array.isArray(body.input)
+      && body.input.some(item => item?.type === "web_search_call")
+      && !body.tools?.length
+      && !body.input.some(item => item?.type === "additional_tools" && item.tools?.length)) {
+      body.tools = [{ type: "web_search", external_web_access: false }];
+      body.tool_choice = "none";
+    }
     // Hosted search cannot run from a Lite input prefix. When switching to
     // regular Responses, move all prefixed tools without duplicating definitions.
     let convertedLitePrefix = false;

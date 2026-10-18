@@ -270,8 +270,17 @@ export function createSSEStream(options = {}) {
         // Translate mode
         if (!trimmed) continue;
 
-        const parsed = parseSSELine(trimmed, targetFormat);
+        let parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+
+        // Codex ignores generic error events other than capacity errors.
+        // Preserve upstream failures as a terminal Responses failure instead.
+        if (targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES
+          && (currentOpenAIResponsesEvent === "error" || parsed.type === "error")
+          && parsed.error && typeof parsed.error === "object") {
+          parsed = { type: "response.failed", response: { status: "failed", error: parsed.error } };
+          currentOpenAIResponsesEvent = "response.failed";
+        }
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;

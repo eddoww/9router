@@ -38,6 +38,18 @@ async function runTransform(input) {
 }
 
 describe("OpenAI Responses streaming termination", () => {
+  it.each([
+    { type: "internal_error", code: null, message: "response protection is unavailable" },
+    { type: "invalid_request_error", code: "context_length_exceeded", message: "Context is too long" },
+  ])("preserves upstream error details in a terminal response.failed: %j", async (error) => {
+    const output = await runTransform(`event: error\ndata: ${JSON.stringify({ type: "error", error })}\n\n`);
+    const failure = output.split("\n").filter(line => line.startsWith("data: {"))
+      .map(line => JSON.parse(line.slice(6))).find(item => item.type === "response.failed");
+    expect(failure?.response.error).toEqual(error);
+    expect(output).not.toContain("stream closed before response.completed");
+    expect(output.match(/event: response.failed/g)).toHaveLength(1);
+  });
+
   it("emits a response.failed event when a Responses stream closes before a terminal event", async () => {
     const output = await runTransform([
       `event: response.created`,

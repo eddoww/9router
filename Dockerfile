@@ -16,12 +16,13 @@ RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
 
 FROM base AS builder
 ARG NPM_REGISTRY
+ENV MAKEFLAGS="-j4" UV_THREADPOOL_SIZE=4
 
 RUN apk add --no-cache python3 make g++ linux-headers
 
 COPY package.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm install \
+    nice -n 19 npm install \
       --registry="${NPM_REGISTRY}" \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
@@ -31,7 +32,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN nice -n 19 npm run build
 
 FROM ${NODE_IMAGE} AS runner
 ARG ALPINE_MIRROR
