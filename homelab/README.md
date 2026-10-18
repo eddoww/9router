@@ -10,7 +10,7 @@ unauthenticated access controls in an isolated container. All Kubernetes nodes
 in the target cluster currently use amd64.
 
 Only a successful candidate advances the maintained branch and publishes an
-immutable `ghcr.io/eddoww/9router@sha256:...` image. A published GitHub release
+immutable `ghcr.io/eddoww/9router-homelab@sha256:...` image. A published GitHub release
 contains `homelab-image.json`: source/upstream commits, digest, workflow run and
 monotonic build number. Partial releases stay drafts. Previously published source
 releases are never rebuilt or replaced.

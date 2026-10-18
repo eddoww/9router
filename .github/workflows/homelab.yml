@@ -23,7 +23,7 @@ jobs:
       contents: write
       packages: write
     env:
-      IMAGE: ghcr.io/eddoww/9router
+      IMAGE: ghcr.io/eddoww/9router-homelab
       UV_THREADPOOL_SIZE: '4'
       MAKEFLAGS: '-j4'
     steps:
@@ -51,11 +51,17 @@ jobs:
           echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # Never rebuild or replace a previously verified source release.
-          if test "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)" = false; then
-            gh release download "$tag" --pattern homelab-image.json --dir "$RUNNER_TEMP/verified-existing"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Verified release $tag already exists." >> "$GITHUB_STEP_SUMMARY"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$RUNNER_TEMP/release.json"; then
+            if jq -e '.draft == false' "$RUNNER_TEMP/release.json" >/dev/null; then
+              gh release download "$tag" --pattern homelab-image.json --dir "$RUNNER_TEMP/verified-existing"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Verified release $tag already exists." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
           else
+            # A registry/API outage must not look like a missing source release.
+            jq -e '(.status | tostring) == "404"' "$RUNNER_TEMP/release.json" >/dev/null
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Use Node 22
@@ -86,7 +92,7 @@ jobs:
           context: .
           load: true
           platforms: linux/amd64
-          tags: ghcr.io/eddoww/9router:sha-${{ steps.source.outputs.commit }}
+          tags: ghcr.io/eddoww/9router-homelab:sha-${{ steps.source.outputs.commit }}
           build-args: APP_VERSION=homelab-${{ steps.source.outputs.commit }}
           labels: |
             org.opencontainers.image.source=https://github.com/eddoww/9router
@@ -115,7 +121,7 @@ jobs:
           python3 - <<'PY'
           import json, os, re
           image = os.environ["VERIFIED_IMAGE"]
-          assert re.fullmatch(r"ghcr\.io/eddoww/9router@sha256:[0-9a-f]{64}", image)
+          assert re.fullmatch(r"ghcr\.io/eddoww/9router-homelab@sha256:[0-9a-f]{64}", image)
           manifest = {
               "image": image,
               "source_commit": os.environ["SOURCE_COMMIT"],

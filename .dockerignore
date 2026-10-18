@@ -8,6 +8,10 @@
 
 # Dependencies and build output
 node_modules
+**/node_modules
+.github
+homelab
+tests
 .next
 out
 build
