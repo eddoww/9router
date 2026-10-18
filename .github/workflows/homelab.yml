@@ -23,6 +23,7 @@ jobs:
       contents: write
       packages: write
     env:
+      GH_REPO: ${{ github.repository }}
       IMAGE: ghcr.io/eddoww/9router-homelab
       UV_THREADPOOL_SIZE: '4'
       MAKEFLAGS: '-j4'
