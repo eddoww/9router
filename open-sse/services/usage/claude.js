@@ -30,6 +30,10 @@ const usageCache = new Map(); // token -> { promise } | { result, expiresAt }
 
 export async function getClaudeUsage(accessToken, proxyOptions = null, options = {}) {
   const force = options?.force === true;
+  // Error recovery must not reuse dashboard cache or stale-on-error readings.
+  if (options?.freshOnly === true) {
+    return fetchClaudeUsageRaw(accessToken, proxyOptions, options);
+  }
 
   // Serve in-flight or fresh cached result (skip on manual force)
   if (!force && accessToken) {
@@ -59,11 +63,12 @@ export async function getClaudeUsage(accessToken, proxyOptions = null, options =
   return promise;
 }
 
-async function fetchClaudeUsageRaw(accessToken, proxyOptions = null) {
+async function fetchClaudeUsageRaw(accessToken, proxyOptions = null, options = {}) {
   try {
     // Skip OAuth usage call while this token is cooling down from a recent 429
     const cooldownUntil = oauthCooldown.get(accessToken);
     if (cooldownUntil && Date.now() < cooldownUntil) {
+      if (options.freshOnly) return { message: "Claude usage endpoint cooling down." };
       return await getClaudeUsageLegacy(accessToken, proxyOptions);
     }
 
@@ -71,6 +76,7 @@ async function fetchClaudeUsageRaw(accessToken, proxyOptions = null) {
     // cedar_ember=1 adds the "limit reset" grant block (same flag Claude Code sends)
     const oauthResponse = await proxyAwareFetch(`${CLAUDE_CONFIG.oauthUsageUrl}?cedar_ember=1`, {
       method: "GET",
+      signal: options.signal,
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "anthropic-beta": "oauth-2025-04-20",
@@ -144,6 +150,8 @@ async function fetchClaudeUsageRaw(accessToken, proxyOptions = null) {
     if (oauthResponse.status === 429) {
       oauthCooldown.set(accessToken, Date.now() + OAUTH_429_COOLDOWN_MS);
     }
+
+    if (options.freshOnly) return { message: "Claude usage endpoint unavailable." };
 
     // Fallback: legacy settings + org usage endpoint
     console.warn(`[Claude Usage] OAuth endpoint returned ${oauthResponse.status}, falling back to legacy`);

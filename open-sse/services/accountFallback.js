@@ -133,10 +133,17 @@ export function getModelLockKey(model) {
  * Reads flat field `modelLock_${model}` (or `modelLock___all` when model=null).
  */
 export function isModelLockActive(connection, model) {
-  const key = getModelLockKey(model);
-  const expiry = connection[key] || connection[MODEL_LOCK_ALL];
-  if (!expiry) return false;
-  return new Date(expiry).getTime() > Date.now();
+  return getModelLockUntil(connection, model) !== null;
+}
+
+/** The requested model and account-wide lock must both expire before retrying. */
+export function getModelLockUntil(connection, model) {
+  if (!connection) return null;
+  const now = Date.now();
+  const expiries = [connection[getModelLockKey(model)], connection[MODEL_LOCK_ALL]]
+    .map(value => value ? new Date(value).getTime() : NaN)
+    .filter(time => Number.isFinite(time) && time > now);
+  return expiries.length ? new Date(Math.max(...expiries)).toISOString() : null;
 }
 
 /**

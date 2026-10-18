@@ -38,8 +38,15 @@ export const BACKOFF_CONFIG = {
 // Default cooldown for transient/unknown errors
 export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
-// Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
+// Cap unverified cooldown hints; subscription quota resets can be hours away.
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
+
+export const SUBSCRIPTION_QUOTA_CONFIG = {
+  cacheMs: 30 * 1000,
+  timeoutMs: 5 * 1000,
+  maxEntries: 256,
+  maxConcurrent: 4,
+};
 
 // Cooldown durations (ms)
 const COOLDOWN = {
