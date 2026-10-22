@@ -50,6 +50,18 @@ export async function writeStreamError(writer, statusCode, message) {
   await writer.write(encoder.encode(`data: ${JSON.stringify(errorBody)}\n\n`));
 }
 
+/** Parse an HTTP Retry-After delay (seconds or HTTP-date) into a future deadline. */
+export function parseRetryAfter(value, now = Date.now()) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  // Do not let Date.parse interpret malformed numeric delays as calendar dates.
+  const deadline = /^\d+$/.test(text)
+    ? now + Number(text) * 1000
+    : /^[A-Za-z]{3,9}(?:,| )/.test(text) ? Date.parse(text) : NaN;
+  return Number.isFinite(deadline) && deadline > now && deadline <= 8.64e15
+    ? deadline : null;
+}
+
 /**
  * Parse upstream provider error response
  * @param {Response} response - Fetch response from provider

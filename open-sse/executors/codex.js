@@ -1,4 +1,5 @@
 import { BaseExecutor } from "./base.js";
+import { parseRetryAfter } from "../utils/error.js";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.js";
 import { PROVIDERS } from "../config/providers.js";
 import {
@@ -382,29 +383,28 @@ export class CodexExecutor extends BaseExecutor {
     return { matched: null, message: null, accountFallback: false, replacementBody };
   }
 
-  // Parse Codex usage_limit_reached to extract precise resetsAtMs; fallback to default otherwise
+  // Respect the latest Codex 429 deadline from Retry-After and quota reset hints.
   parseError(response, bodyText) {
-    if (response.status === 429 && bodyText) {
-      try {
-        const json = JSON.parse(bodyText);
-        const err = json?.error;
-        if (err?.type === "usage_limit_reached") {
-          const now = Date.now();
-          let resetsAtMs = null;
-          if (typeof err.resets_at === "number" && err.resets_at > 0) {
-            const ms = err.resets_at * 1000;
-            if (ms > now) resetsAtMs = ms;
-          }
-          if (!resetsAtMs && typeof err.resets_in_seconds === "number" && err.resets_in_seconds > 0) {
-            resetsAtMs = now + err.resets_in_seconds * 1000;
-          }
-          if (resetsAtMs) {
-            return { status: 429, message: err.message || bodyText, resetsAtMs };
-          }
+    const parsed = super.parseError(response, bodyText);
+    if (response.status !== 429) return parsed;
+    const now = Date.now();
+    const deadlines = [parseRetryAfter(response.headers?.get("retry-after"), now)];
+    try {
+      const err = JSON.parse(bodyText)?.error;
+      if (err?.type === "usage_limit_reached") {
+        parsed.message = err.message || bodyText;
+        if (Number.isFinite(err.resets_at) && err.resets_at > 0) {
+          deadlines.push(err.resets_at * 1000);
         }
-      } catch { /* fall through to default */ }
-    }
-    return super.parseError(response, bodyText);
+        if (Number.isFinite(err.resets_in_seconds) && err.resets_in_seconds > 0) {
+          deadlines.push(now + err.resets_in_seconds * 1000);
+        }
+      }
+    } catch { /* Headers still apply to empty or non-JSON errors. */ }
+    const validDeadlines = deadlines.filter(time => Number.isFinite(time) && time > now && time <= 8.64e15);
+    return validDeadlines.length
+      ? { ...parsed, resetsAtMs: Math.max(...validDeadlines) }
+      : parsed;
   }
 
   /**

@@ -1,10 +1,10 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockUntil } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
-import { getSubscriptionQuotaReset } from "./subscriptionQuota.js";
+import { codexQuotaLockModel, getSubscriptionQuotaReset } from "./subscriptionQuota.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -84,6 +84,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
+    // A confirmed Codex quota window is shared within its family, not all Codex lanes.
+    const quotaLockModel = providerId === "codex" ? codexQuotaLockModel(model) : null;
+    const applicableLockUntil = connection => {
+      const deadlines = [getModelLockUntil(connection, model),
+        quotaLockModel ? getModelLockUntil(connection, quotaLockModel) : null].filter(Boolean);
+      return deadlines.sort().at(-1) || null;
+    };
+
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const eligibleConnections = connections.filter(c => {
       const enabled = c.providerSpecificData?.enabledModels;
@@ -92,7 +100,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
     const availableConnections = eligibleConnections.filter(c => {
       if (excludeSet.has(c.id)) return false;
-      if (isModelLockActive(c, model)) return false;
+      if (Boolean(applicableLockUntil(c))) return false;
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
         const connQuotas = antigravityQuotaCache.get(c.id);
@@ -109,7 +117,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
     connections.forEach(c => {
       const excluded = excludeSet.has(c.id);
-      const locked = isModelLockActive(c, model);
+      const locked = Boolean(applicableLockUntil(c));
       if (excluded || locked) {
         const lockUntil = getEarliestModelLockUntil(c);
         log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
@@ -118,8 +126,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
-      const lockedConns = eligibleConnections.filter(c => isModelLockActive(c, model));
-      const expiries = lockedConns.map(c => getModelLockUntil(c, model)).filter(Boolean);
+      const lockedConns = eligibleConnections.filter(c => Boolean(applicableLockUntil(c)));
+      const expiries = lockedConns.map(applicableLockUntil).filter(Boolean);
       if (isAntigravity && model && antigravityQuotaCache) {
         eligibleConnections.forEach((c) => {
           const connQuotas = antigravityQuotaCache.get(c.id);
@@ -240,7 +248,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
 /**
  * Mark account+model as unavailable — locks modelLock_${model} in DB.
- * All errors (429, 401, 5xx, etc.) lock per model, not per account.
+ * Transient errors lock per model; confirmed Codex exhaustion also locks its quota family.
  * @param {string} connectionId
  * @param {number} status - HTTP status code from upstream
  * @param {string} errorText
@@ -250,10 +258,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
-  const connections = await getProviderConnections({ provider });
+  const providerId = resolveProviderId(provider);
+  const connections = await getProviderConnections({ provider: providerId });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
-  const providerId = resolveProviderId(provider);
   const subscriptionResetMs = Number(status) === 429
     ? await getSubscriptionQuotaReset(conn ? { ...conn, provider: providerId } : null, model)
     : null;
@@ -287,6 +295,16 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  // Only a live usage snapshot confirms a shared quota. Retry-After alone may be
+  // model-specific capacity and must not disable other Codex models or lanes.
+  if (providerId === "codex" && subscriptionResetMs > Date.now()) {
+    const quotaModel = codexQuotaLockModel(model);
+    if (quotaModel) {
+      const existing = getModelLockUntil(conn, quotaModel);
+      const deadline = Math.max(subscriptionResetMs, existing ? Date.parse(existing) : 0);
+      Object.assign(lockUpdate, buildModelLockUpdate(quotaModel, deadline - Date.now()));
+    }
+  }
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,

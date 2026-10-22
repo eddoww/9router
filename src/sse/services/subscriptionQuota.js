@@ -13,12 +13,21 @@ function cleanModel(model) {
   return String(model || "").split("/").pop().replace(/\([^()]+\)\s*$/, "").trim().toLowerCase();
 }
 
+/** Shared quota family, distinct from an individual model's transient cooldown. */
+export function codexQuotaLockModel(model) {
+  const clean = cleanModel(model);
+  if (!clean) return null;
+  const family = getModelQuotaFamily("cx", clean);
+  const scope = family === "review" || clean.endsWith(CODEX_REVIEW_SUFFIX)
+    ? "review" : clean.includes("spark") ? "spark" : "normal";
+  return `__codex_quota_${scope}`;
+}
+
 function applies(provider, name, model) {
   if (provider === "codex") {
-    if (!model) return false;
-    const family = getModelQuotaFamily("cx", model);
-    const prefix = family === "review" || model.endsWith(CODEX_REVIEW_SUFFIX)
-      ? "review_" : model.includes("spark") ? "spark_" : "";
+    const scope = codexQuotaLockModel(model);
+    if (!scope) return false;
+    const prefix = scope.endsWith("review") ? "review_" : scope.endsWith("spark") ? "spark_" : "";
     return name === `${prefix}session` || name === `${prefix}weekly`;
   }
   if (name === "session (5h)" || name === "weekly (7d)") return true;

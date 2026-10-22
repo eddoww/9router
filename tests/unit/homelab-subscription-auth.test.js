@@ -11,13 +11,15 @@ vi.mock("@/lib/localDb", () => ({
 vi.mock("@/lib/network/connectionProxy", () => ({
   resolveConnectionProxyConfig: vi.fn(async () => ({})), pickProxyPoolId: vi.fn(),
 }));
-vi.mock("@/sse/services/subscriptionQuota.js", () => ({ getSubscriptionQuotaReset: mocks.quota }));
+vi.mock("@/sse/services/subscriptionQuota.js", async importOriginal => ({
+  ...await importOriginal(), getSubscriptionQuotaReset: mocks.quota,
+}));
 vi.mock("@/sse/services/antigravityQuota.js", () => ({
   getAntigravityQuotaCache: vi.fn(), getAntigravityModelQuota: vi.fn(),
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
-import { getProviderCredentials, markAccountUnavailable } from "../../src/sse/services/auth.js";
+import { clearAccountError, getProviderCredentials, markAccountUnavailable } from "../../src/sse/services/auth.js";
 const NOW = Date.parse("2026-10-18T09:00:00Z");
 const HOUR = 3600000;
 const iso = hours => new Date(NOW + hours * HOUR).toISOString();
@@ -78,6 +80,64 @@ describe("subscription failure persistence", () => {
   it.each([NaN, Infinity, NOW - 1])("ignores invalid or expired explicit reset %s", async reset => {
     const result = await markAccountUnavailable("a", 429, "rate limit", "codex", "model", reset);
     expect(result.cooldownMs).toBe(300000);
+  });
+});
+
+describe("Codex shared exhaustion scope", () => {
+  async function exhaust(model, reset = NOW + 12 * HOUR, explicit = null) {
+    const conn = { id: "a", provider: "codex", accessToken: "test-token" };
+    mocks.connections.mockResolvedValue([conn]);
+    mocks.quota.mockResolvedValue(reset);
+    await markAccountUnavailable("a", 429, "quota", "cx", model, explicit);
+    expect(mocks.connections).toHaveBeenLastCalledWith({ provider: "codex" });
+    Object.assign(conn, mocks.update.mock.calls.at(-1)[1]);
+    return conn;
+  }
+
+  it("blocks a normal model switch but allows review and Spark", async () => {
+    const conn = await exhaust("gpt-5.4");
+    expect(conn.modelLock___codex_quota_normal).toBe(iso(12));
+    expect(await getProviderCredentials("cx", null, "gpt-5.3-codex"))
+      .toMatchObject({ allRateLimited: true, retryAfter: iso(12) });
+    for (const model of ["gpt-5.4-review", "gpt-5.3-codex-spark"]) {
+      expect(await getProviderCredentials("codex", null, model)).toMatchObject({ connectionId: "a" });
+    }
+  });
+
+  it.each([
+    ["cx/gpt-5.4-review(high)", "gpt-5.3-codex-review", "review"],
+    ["gpt-5.3-codex-spark", "gpt-5.3-codex-spark(high)", "spark"],
+  ])("keeps %s exhaustion in its quota family", async (model, sibling, scope) => {
+    const conn = await exhaust(model);
+    expect(conn[`modelLock___codex_quota_${scope}`]).toBe(iso(12));
+    expect(await getProviderCredentials("codex", null, sibling)).toMatchObject({ allRateLimited: true });
+    expect(await getProviderCredentials("codex", null, "gpt-5.4")).toMatchObject({ connectionId: "a" });
+  });
+
+  it("does not broaden a transient Retry-After-only 429", async () => {
+    const conn = await exhaust("gpt-5.4", null, NOW + 2 * HOUR);
+    expect(conn.modelLock___codex_quota_normal).toBeUndefined();
+    expect(await getProviderCredentials("codex", null, "gpt-5.3-codex")).toMatchObject({ connectionId: "a" });
+    expect(await getProviderCredentials("codex", null, "gpt-5.4"))
+      .toMatchObject({ allRateLimited: true, retryAfter: iso(2) });
+  });
+
+  it("combines a later Retry-After with confirmed exhaustion without broadening the header", async () => {
+    const conn = await exhaust("gpt-5.4", NOW + 2 * HOUR, NOW + 12 * HOUR);
+    expect(conn.modelLock___codex_quota_normal).toBe(iso(2));
+    expect(await getProviderCredentials("codex", null, "gpt-5.4"))
+      .toMatchObject({ allRateLimited: true, retryAfter: iso(12) });
+    expect(await getProviderCredentials("codex", null, "gpt-5.3-codex"))
+      .toMatchObject({ allRateLimited: true, retryAfter: iso(2) });
+  });
+
+  it("does not clear shared exhaustion on a successful independent lane", async () => {
+    const conn = await exhaust("gpt-5.4");
+    await clearAccountError("a", conn, "gpt-5.4-review");
+    expect(mocks.update.mock.calls.at(-1)[1]).not.toHaveProperty("modelLock___codex_quota_normal");
+    vi.setSystemTime(NOW + 13 * HOUR);
+    await clearAccountError("a", conn, "gpt-5.4-review");
+    expect(mocks.update.mock.calls.at(-1)[1]).toMatchObject({ modelLock___codex_quota_normal: null });
   });
 });
 
